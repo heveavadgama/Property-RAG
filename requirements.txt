@@ -6,3 +6,5 @@ faiss-cpu
 scikit-learn
 openai
 python-dotenv
+nltk
+
