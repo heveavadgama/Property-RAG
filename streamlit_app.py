@@ -103,14 +103,15 @@ def synthesize_answer_with_context(query: str, retrieved_records: pd.DataFrame, 
         return "I couldn't find any properties matching your criteria."
 
     context_rows = []
-    for _, r in retrieved_records.head(10).iterrows():
+    for _, r in retrieved_records.head(15).iterrows(): # Give AI a bit more context
         context_rows.append(f"- Address: {r.get('address', 'N/A')}, Price: ${r.get('price', 0):,}, Beds: {r.get('bedrooms', 'N/A')}, Baths: {r.get('bathrooms', 'N/A')}")
     context_text = "\n".join(context_rows)
 
     if use_openai:
         prompt = (
             f"You are Estate Genie, a helpful real estate assistant. Answer the user's question based *only* on the context provided below. "
-            f"If multiple properties in the context match the user's request, list all of them. Be concise and friendly.\n\n"
+            f"If the user asks for a specific number of properties (e.g., 'top 20'), list all the matching properties you see in the context. "
+            f"Be concise, friendly, and use a bulleted or numbered list for properties.\n\n"
             f"**Context:**\n{context_text}\n\n"
             f"**User Question:** {query}\n\n"
             f"**Answer:**"
@@ -119,7 +120,7 @@ def synthesize_answer_with_context(query: str, retrieved_records: pd.DataFrame, 
             resp = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=300,
+                max_tokens=400,
                 temperature=0.1
             )
             answer = resp.choices[0].message.content.strip()
@@ -142,7 +143,7 @@ st.markdown("Your personal real estate assistant. Ask me anything about the prop
 with st.sidebar:
     st.header("⚙️ Controls")
     uploaded_file = st.file_uploader("Upload Property CSV", type=["csv"])
-    
+
     df = None
     if uploaded_file:
         df = pd.read_csv(uploaded_file)
@@ -152,7 +153,7 @@ with st.sidebar:
         if os.path.exists(default_path):
             df = pd.read_csv(default_path)
             st.info(f"Loaded local file: `{default_path}`")
-    
+
     if df is not None:
         if st.button("Build Property Index"):
             with st.spinner("Processing data and building vector index... Please wait."):
@@ -178,9 +179,12 @@ with st.sidebar:
     bedrooms_filter = st.selectbox("Bedrooms", ["Any"] + sorted(list(range(1, 9))))
     bathrooms_filter = st.selectbox("Minimum Bathrooms", ["Any"] + sorted(list(range(1, 7))))
 
+    # *** NEW: Flexible number of results control ***
+    num_results = st.number_input("Number of results to display", min_value=5, max_value=50, value=10, step=5)
+
 
 # --- Main Page for Query and Results ---
-query = st.text_input("Ask a question...", placeholder="e.g., Show me modern 2-bedroom houses under $1000")
+query = st.text_input("Ask a question...", placeholder="e.g., Top 20 3-bedroom houses under $2000")
 use_openai = st.checkbox("Use AI-powered answers", value=True)
 
 if st.button("Ask Genie", type="primary"):
@@ -192,43 +196,40 @@ if st.button("Ask Genie", type="primary"):
     else:
         with st.spinner("🧞‍♂️ The Genie is thinking..."):
             df_meta = pd.DataFrame(meta)
-            
+
             analytic_ans, analytic_df = handle_analytic_query(df_meta, query)
             if analytic_ans:
                 st.subheader("💡 Quick Answer")
                 st.markdown(analytic_ans)
                 if not analytic_df.empty:
-                    st.dataframe(analytic_df.head(10)[["address", "price", "bedrooms", "bathrooms", "description"]])
+                    st.dataframe(analytic_df.head(num_results)[["address", "price", "bedrooms", "bathrooms", "description"]])
             else:
                 model = get_embed_model()
                 q_emb = embed_texts(model, [query])
-                distances, indices = index.search(q_emb, 100) # Retrieve more candidates for filtering
-                
+                distances, indices = index.search(q_emb, 100)
+
                 retrieved_items = [meta[i] for i in indices[0] if i < len(meta)]
                 retrieved_df = pd.DataFrame(retrieved_items)
                 retrieved_df["similarity"] = distances[0][:len(retrieved_df)]
 
                 # Apply sidebar filters
                 final_df = retrieved_df[
-                    (retrieved_df["price"] >= price_range[0]) & 
+                    (retrieved_df["price"] >= price_range[0]) &
                     (retrieved_df["price"] <= price_range[1])
                 ].copy()
                 if bedrooms_filter != "Any":
                     final_df = final_df[final_df["bedrooms"] == int(bedrooms_filter)]
                 if bathrooms_filter != "Any":
                     final_df = final_df[final_df["bathrooms"].fillna(0) >= int(bathrooms_filter)]
-                
-                # *** NEW: CONDITIONAL SORTING LOGIC ***
+
+                # Conditional sorting logic
                 price_keywords = ['cheap', 'cheapest', 'under', 'less than', 'lowest price', 'by price']
                 sort_by_price = any(keyword in query.lower() for keyword in price_keywords)
 
                 if sort_by_price:
-                    # If the query is about price, sort by price (ascending)
                     final_df = final_df.sort_values(by="price", ascending=True)
                 else:
-                    # Otherwise, sort by relevance (similarity descending)
                     final_df = final_df.sort_values(by="similarity", ascending=False)
-
 
                 if final_df.empty:
                     st.warning("No properties found that match your search and filter criteria. Try broadening your search!")
@@ -236,12 +237,13 @@ if st.button("Ask Genie", type="primary"):
                     st.subheader("💬 Genie's Answer")
                     answer = synthesize_answer_with_context(query, final_df, use_openai)
                     st.markdown(answer)
-                    
+
                     st.subheader("🏡 Relevant Properties Found")
                     if sort_by_price:
                         st.info("ℹ️ Results sorted by price (lowest to highest).")
                     else:
                         st.info("ℹ️ Results sorted by relevance to your query.")
-                        
+
                     display_cols = ["address", "price", "bedrooms", "bathrooms", "similarity", "description"]
-                    st.dataframe(final_df.head(10)[display_cols])
+                    # *** NEW: Use the flexible num_results variable here ***
+                    st.dataframe(final_df.head(num_results)[display_cols])
