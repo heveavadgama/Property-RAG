@@ -125,18 +125,37 @@ def parse_query_filters(query: str):
     return beds, baths, keywords
 
 # AI / Summary
-def synthesize_answer_with_context(query: str, retrieved_records: pd.DataFrame, use_openai: bool = False, top_n: int = 3):
+def synthesize_answer_with_context(query: str, retrieved_records: pd.DataFrame, use_openai: bool = False, top_n: int = 3, keywords: List[str] = []):
     if len(retrieved_records) == 0:
         return "I couldn't find any properties matching your criteria."
-    top_properties = retrieved_records.head(top_n)
+
+    # Check if keywords exist in any description
+    keyword_flags = {}
+    for kw in keywords:
+        keyword_flags[kw] = retrieved_records['description'].str.lower().str.contains(kw).any()
+
     summary_lines = []
+    top_properties = retrieved_records.head(top_n)
     for _, r in top_properties.iterrows():
         price_str = f"${r.get('price', 0):,}" if pd.notna(r.get('price')) else "N/A"
         beds = r.get('bedrooms', 'N/A')
         baths = r.get('bathrooms', 'N/A')
         summary_lines.append(f"- {r.get('address','N/A')} — {beds} bd / {baths} ba — {price_str}")
-    text_summary = f"I found {len(retrieved_records)} properties matching your query. Top {top_n} results:\n" + "\n".join(summary_lines)
 
+    if keywords:
+        keyword_msgs = []
+        for kw, exists in keyword_flags.items():
+            if exists:
+                keyword_msgs.append(f"Some properties contain {kw}.")
+            else:
+                keyword_msgs.append(f"None specifically mention {kw}.")
+        intro_text = "Based on the context provided, " + " ".join(keyword_msgs)
+    else:
+        intro_text = f"I found {len(retrieved_records)} properties matching your query. Top {top_n} results:"
+
+    text_summary = intro_text + "\n" + "\n".join(summary_lines)
+
+    # Optional OpenAI generative answer
     if use_openai and openai.api_key:
         context_rows = [
             f"- Address: {r.get('address', 'N/A')}, Price: ${r.get('price', 0):,}, Beds: {r.get('bedrooms', 'N/A')}, Baths: {r.get('bathrooms', 'N/A')}"
@@ -161,7 +180,9 @@ def synthesize_answer_with_context(query: str, retrieved_records: pd.DataFrame, 
             return ai_answer
         except Exception as e:
             st.warning(f"OpenAI call failed: {e}. Showing a basic summary instead.")
+
     return text_summary
+
 
 # -------------------------
 # Streamlit UI
