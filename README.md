@@ -1,7 +1,4 @@
-# Property-RAG
-Perfect! Here’s a **more polished, visually appealing GitHub README** for **Estate Genie**, complete with badges, sections, and a modern structure:
 
----
 
 # 🧞‍♂️ Estate Genie
 
