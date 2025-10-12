@@ -1,5 +1,4 @@
 # streamlit_app.py
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -13,55 +12,27 @@ import re
 import openai
 from dotenv import load_dotenv
 from openai import OpenAI
-
-
 import nltk
-try:
-    nltk.data.find('corpora/wordnet')
-except LookupError:
-    nltk.download('wordnet')
-    nltk.download('omw-1.4')
 
-from nltk.stem import WordNetLemmatizer
-
-
-# -------------------------
-# Page Config and Secrets
-# -------------------------
+# --- Page Config ---
 st.set_page_config(page_title="Estate Genie", layout="wide", page_icon="🧞‍♂️")
-load_dotenv()
 
+# Load OpenAI key
+load_dotenv()
 if "OPENAI_API_KEY" in st.secrets:
     openai.api_key = st.secrets["OPENAI_API_KEY"]
 else:
     openai.api_key = os.getenv("OPENAI_API_KEY")
 
 if not openai.api_key:
-    st.error("❌ OpenAI API key not found. Add it to Streamlit Secrets or .env file.")
+    st.error("❌ OpenAI API key not found. Add it to Streamlit secrets or .env.")
     st.stop()
 
 client = OpenAI(api_key=openai.api_key)
 
-lemmatizer = WordNetLemmatizer()
-
 # -------------------------
 # Helper Functions
 # -------------------------
-def normalize_word(word):
-    return lemmatizer.lemmatize(word.lower())
-
-def extract_features_from_query(query: str):
-    """Extract feature keywords from query and normalize them"""
-    keywords = ["terrace", "garden", "pool", "balcony", "garage"]
-    query_words = query.lower().split()
-    features = []
-    for k in keywords:
-        for w in query_words:
-            if normalize_word(w).startswith(normalize_word(k)):
-                features.append(k)
-                break
-    return features
-
 @st.cache_resource(show_spinner="Loading embedding model...")
 def get_embed_model(name="all-MiniLM-L6-v2"):
     return SentenceTransformer(name)
@@ -104,6 +75,7 @@ def embed_texts(model, texts: List[str]) -> np.ndarray:
     emb = normalize(emb, norm='l2')
     return emb.astype("float32")
 
+# Analytic query handling
 def handle_analytic_query(df: pd.DataFrame, q: str):
     q_l = q.lower()
     m = re.search(r"average price of (\d+)[ -]?bed", q_l)
@@ -113,7 +85,7 @@ def handle_analytic_query(df: pd.DataFrame, q: str):
         if len(sub):
             return f"The average price of {beds}-bedroom homes, based on {len(sub)} listings, is **${sub['price'].mean():,.2f}**.", sub
         else:
-            return f"I couldn't find any listings for {beds}-bedroom homes.", pd.DataFrame()
+            return f"I couldn't find any listings for {beds}-bedroom homes to calculate the average price.", pd.DataFrame()
 
     if "most crime" in q_l:
         if "crime_score_weight" in df.columns:
@@ -122,19 +94,40 @@ def handle_analytic_query(df: pd.DataFrame, q: str):
                 top_address = tmp.index[0]
                 top_score = tmp.iloc[0]
                 return f"The area with the highest average crime score is **{top_address}** with a score of {top_score:.2f}.", df[df["address"] == top_address]
-        return "The dataset does not contain a 'crime_score_weight' column.", pd.DataFrame()
+        return "The dataset does not contain a 'crime_score_weight' column to answer this question.", pd.DataFrame()
     return None, None
 
-def synthesize_answer_with_context(
-    query: str,
-    retrieved_records: pd.DataFrame,
-    use_openai: bool = False,
-    top_n: int = 3
-):
+# NLP parsing for query
+def normalize_query_keywords(text):
+    synonym_map = {
+        "terrace": "terraced",
+        "terraced": "terraced",
+        "balcony": "balcony",
+        "garden": "garden",
+    }
+    normalized = []
+    for word in text.lower().split():
+        if word in synonym_map:
+            normalized.append(synonym_map[word])
+    return normalized
+
+def parse_query_filters(query: str):
+    q = query.lower()
+    beds = None
+    baths = None
+    match_beds = re.search(r"(\d+)[ -]?bed", q)
+    if match_beds:
+        beds = int(match_beds.group(1))
+    match_baths = re.search(r"(\d+)[ -]?bath", q)
+    if match_baths:
+        baths = int(match_baths.group(1))
+    keywords = normalize_query_keywords(q)
+    return beds, baths, keywords
+
+# AI / Summary
+def synthesize_answer_with_context(query: str, retrieved_records: pd.DataFrame, use_openai: bool = False, top_n: int = 3):
     if len(retrieved_records) == 0:
         return "I couldn't find any properties matching your criteria."
-
-    # Summarize top_n properties in text
     top_properties = retrieved_records.head(top_n)
     summary_lines = []
     for _, r in top_properties.iterrows():
@@ -142,26 +135,16 @@ def synthesize_answer_with_context(
         beds = r.get('bedrooms', 'N/A')
         baths = r.get('bathrooms', 'N/A')
         summary_lines.append(f"- {r.get('address','N/A')} — {beds} bd / {baths} ba — {price_str}")
-
     text_summary = f"I found {len(retrieved_records)} properties matching your query. Top {top_n} results:\n" + "\n".join(summary_lines)
 
-    # Optional OpenAI generative answer
     if use_openai and openai.api_key:
         context_rows = [
-            f"- Address: {r.get('address', 'N/A')}, Price: ${r.get('price', 0):,}, Beds: {r.get('bedrooms', 'N/A')}, Baths: {r.get('bathrooms', 'N/A')}, Desc: {r.get('description','')}"
+            f"- Address: {r.get('address', 'N/A')}, Price: ${r.get('price', 0):,}, Beds: {r.get('bedrooms', 'N/A')}, Baths: {r.get('bathrooms', 'N/A')}"
             for _, r in retrieved_records.head(max(10, top_n)).iterrows()
         ]
         context_text = "\n".join(context_rows)
-
-        # Extract features from query
-        features = extract_features_from_query(query)
-        feature_text = ""
-        if features:
-            feature_text = f"Only consider properties with these features: {', '.join(features)}.\n"
-
         prompt = (
-            f"You are Estate Genie, a helpful real estate assistant.\n"
-            f"{feature_text}"
+            f"You are Estate Genie, a helpful real estate assistant. "
             f"Answer the user's question based *only* on the context below.\n\n"
             f"**Context:**\n{context_text}\n\n"
             f"**User Question:** {query}\n\n"
@@ -171,22 +154,25 @@ def synthesize_answer_with_context(
             resp = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=400,
+                max_tokens=300,
                 temperature=0.1
             )
             ai_answer = resp.choices[0].message.content.strip()
             return ai_answer
         except Exception as e:
-            st.warning(f"OpenAI call failed: {e}. Showing basic summary instead.")
-
+            st.warning(f"OpenAI call failed: {e}. Showing a basic summary instead.")
     return text_summary
 
 # -------------------------
-# Sidebar - Data Loading & Filters
+# Streamlit UI
 # -------------------------
+st.title("🧞‍♂️ Estate Genie")
+st.markdown("Your personal real estate assistant. Ask me anything about the property listings!")
+
 with st.sidebar:
     st.header("⚙️ Controls")
     uploaded_file = st.file_uploader("Upload Property CSV", type=["csv"])
+
     df = None
     if uploaded_file:
         df = pd.read_csv(uploaded_file)
@@ -199,7 +185,7 @@ with st.sidebar:
 
     if df is not None:
         if st.button("Build Property Index"):
-            with st.spinner("Processing data and building vector index..."):
+            with st.spinner("Processing data and building vector index... Please wait."):
                 df_proc = preprocess(df)
                 model = get_embed_model()
                 embeddings = embed_texts(model, df_proc["description"].fillna("").tolist())
@@ -216,20 +202,16 @@ with st.sidebar:
         df_meta_filter = pd.DataFrame(meta)
         if 'price' in df_meta_filter.columns and df_meta_filter['price'].notna().any():
             min_p = int(df_meta_filter['price'].min())
-            max_p = int(df_meta_filter['price'].max())
+            max_p = int(df_meta_filter['price'].max())  
 
     price_range = st.slider("Price Range", min_p, max_p, (min_p, max_p))
-    bedrooms_filter = st.selectbox("Bedrooms", ["Any"] + sorted(list(range(1, 9))))
-    bathrooms_filter = st.selectbox("Minimum Bathrooms", ["Any"] + sorted(list(range(1, 7))))
+    bedrooms_filter = st.selectbox("Bedrooms (Sidebar filter)", ["Any"] + sorted(list(range(1, 9))))
+    bathrooms_filter = st.selectbox("Minimum Bathrooms (Sidebar filter)", ["Any"] + sorted(list(range(1, 7))))
+    terrace_filter = st.selectbox("Terrace preference", ["Any", "With terrace", "Without terrace"])
     num_results = st.number_input("Number of results to display", min_value=5, max_value=50, value=10, step=5)
 
-# -------------------------
-# Main UI
-# -------------------------
-st.title("🧞‍♂️ Estate Genie")
-st.markdown("Your personal real estate assistant. Ask me anything about the property listings!")
-
-query = st.text_input("Ask a question...", placeholder="e.g., Top 20 3-bedroom houses under $2000")
+# --- Main Query ---
+query = st.text_input("Ask a question...", placeholder="e.g., 2 baths 3 bedroom with terrace")
 use_openai = st.checkbox("Use AI-powered answers", value=True)
 
 if st.button("Ask Genie", type="primary"):
@@ -242,9 +224,8 @@ if st.button("Ask Genie", type="primary"):
         with st.spinner("🧞‍♂️ The Genie is thinking..."):
             df_meta = pd.DataFrame(meta)
 
-            # Override num_results if "Top N" is in query
-            match = re.search(r"top (\d+)", query.lower())
-            display_num = int(match.group(1)) if match else num_results
+            # Parse query
+            q_beds, q_baths, q_keywords = parse_query_filters(query)
 
             # Quick analytic answers
             analytic_ans, analytic_df = handle_analytic_query(df_meta, query)
@@ -252,7 +233,7 @@ if st.button("Ask Genie", type="primary"):
                 st.subheader("💡 Quick Answer")
                 st.markdown(analytic_ans)
                 if not analytic_df.empty:
-                    df_display = analytic_df.head(display_num)[["address","price","bedrooms","bathrooms","description"]].fillna("N/A")
+                    df_display = analytic_df.head(num_results)[["address", "price", "bedrooms", "bathrooms", "description"]].fillna("N/A")
                     st.dataframe(df_display)
             else:
                 model = get_embed_model()
@@ -263,32 +244,43 @@ if st.button("Ask Genie", type="primary"):
                 retrieved_df = pd.DataFrame(retrieved_items)
                 retrieved_df["similarity"] = distances[0][:len(retrieved_df)]
 
-                # Apply sidebar filters
-                final_df = retrieved_df[
-                    (retrieved_df["price"] >= price_range[0]) &
-                    (retrieved_df["price"] <= price_range[1])
-                ].copy()
+                # ----------------------------
+                # APPLY FILTERS: query priority first
+                # ----------------------------
+                filtered_df = retrieved_df.copy()
+                if q_beds:
+                    filtered_df = filtered_df[filtered_df["bedrooms"] == q_beds]
+                if q_baths:
+                    filtered_df = filtered_df[filtered_df["bathrooms"].fillna(0) >= q_baths]
+                if q_keywords:
+                    filtered_df = filtered_df[filtered_df["description"].str.lower().apply(
+                        lambda desc: all(k in desc for k in q_keywords)
+                    )]
+
+                # Sidebar filters applied additionally if user selected
                 if bedrooms_filter != "Any":
-                    final_df = final_df[final_df["bedrooms"] == int(bedrooms_filter)]
+                    filtered_df = filtered_df[filtered_df["bedrooms"] == int(bedrooms_filter)]
                 if bathrooms_filter != "Any":
-                    final_df = final_df[final_df["bathrooms"].fillna(0) >= int(bathrooms_filter)]
+                    filtered_df = filtered_df[filtered_df["bathrooms"].fillna(0) >= int(bathrooms_filter)]
+                if terrace_filter != "Any":
+                    if terrace_filter == "With terrace":
+                        filtered_df = filtered_df[filtered_df["description"].str.lower().str.contains("terraced")]
+                    else:
+                        filtered_df = filtered_df[~filtered_df["description"].str.lower().str.contains("terraced")]
 
-                # Parse features from query
-                features = extract_features_from_query(query)
-                for f in features:
-                    final_df = final_df[final_df['description'].str.lower().str.contains(f)]
-
-                # Sorting logic
+                # Sort by price if query mentions
                 price_keywords = ['cheap', 'cheapest', 'under', 'less than', 'lowest price', 'by price']
                 sort_by_price = any(keyword in query.lower() for keyword in price_keywords)
-                final_df = final_df.sort_values(by="price" if sort_by_price else "similarity",
-                                                ascending=sort_by_price)
+                if sort_by_price:
+                    filtered_df = filtered_df.sort_values(by="price", ascending=True)
+                else:
+                    filtered_df = filtered_df.sort_values(by="similarity", ascending=False)
 
-                if final_df.empty:
+                if filtered_df.empty:
                     st.warning("No properties found that match your search and filter criteria.")
                 else:
-                    st.subheader("💬 Genie's Answer")
-                    answer = synthesize_answer_with_context(query, final_df, use_openai, top_n=display_num)
+                    st.subheader("💬 Genie's Summary")
+                    answer = synthesize_answer_with_context(query, filtered_df, use_openai, top_n=num_results)
                     st.markdown(answer)
 
                     st.subheader("🏡 Relevant Properties Found")
@@ -297,5 +289,4 @@ if st.button("Ask Genie", type="primary"):
                     else:
                         st.info("ℹ️ Results sorted by relevance to your query.")
                     display_cols = ["address","price","bedrooms","bathrooms","similarity","description"]
-                    df_display = final_df.head(display_num)[display_cols].fillna("N/A")
-                    st.dataframe(df_display)
+                    st.dataframe(filtered_df.head(num_results)[display_cols].fillna("N/A"))
