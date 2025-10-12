@@ -35,7 +35,9 @@ else:
 if not openai.api_key:
     st.error("❌ OpenAI API key not found. Please add it to your Streamlit Secrets or a .env file.")
     st.stop()
-
+    
+from openai import OpenAI # Import the new class
+client = OpenAI(api_key=openai.api_key) # Create the client instance
 
 st.set_page_config(page_title="Property RAG", layout="wide")
 
@@ -183,12 +185,14 @@ def synthesize_answer_with_context(query: str, retrieved_records: pd.DataFrame, 
             # Note: The 'openai.ChatCompletion.create' is for older openai library versions.
             # For openai v1.0.0 and above, the syntax is openai.chat.completions.create()
             # We'll assume an older version for compatibility with the user's code.
-            resp = openai.ChatCompletion.create(
-                model="gpt-4o-mini",  # you can change model name if needed
+            resp = client.chat.completions.create( # Use the new client method
+                model="gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=300,
                 temperature=0.0
             )
+            # Access the response using attributes, not dictionary keys
+            answer = resp.choices[0].message.content.strip()
             answer = resp["choices"][0]["message"]["content"].strip()
             return (
                 answer
