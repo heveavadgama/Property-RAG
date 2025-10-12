@@ -193,7 +193,6 @@ def synthesize_answer_with_context(query: str, retrieved_records: pd.DataFrame, 
             )
             # Access the response using attributes, not dictionary keys
             answer = resp.choices[0].message.content.strip()
-            answer = resp["choices"][0]["message"]["content"].strip()
             return (
                 answer
                 + "\n\nSources:\n"
