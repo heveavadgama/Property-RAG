@@ -143,15 +143,11 @@ def synthesize_answer_with_context(query: str, retrieved_records: pd.DataFrame, 
         summary_lines.append(f"- {r.get('address','N/A')} — {beds} bd / {baths} ba — {price_str}")
 
     if keywords:
-        keyword_msgs = []
-        for kw, exists in keyword_flags.items():
-            if exists:
-                keyword_msgs.append(f"Some properties contain {kw}.")
-            else:
-                keyword_msgs.append(f"None specifically mention {kw}.")
-        intro_text = "Based on the context provided, " + " ".join(keyword_msgs)
+        # Instead of "none specifically mention …", we just acknowledge keyword presence neutrally
+        intro_text = f"Based on your query, here are some properties that match your criteria:"
     else:
         intro_text = f"I found {len(retrieved_records)} properties matching your query. Top {top_n} results:"
+
 
     text_summary = intro_text + "\n" + "\n".join(summary_lines)
 
