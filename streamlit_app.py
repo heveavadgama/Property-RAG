@@ -22,8 +22,18 @@ import re
 import openai
 from dotenv import load_dotenv
 
+# Load from Streamlit secrets if available, otherwise from .env
 load_dotenv()
-openai.api_key = st.secrets["OPENAI_API_KEY"]
+
+if "OPENAI_API_KEY" in st.secrets:
+    openai.api_key = st.secrets["OPENAI_API_KEY"]
+else:
+    openai.api_key = os.getenv("OPENAI_API_KEY")
+
+if not openai.api_key:
+    st.error("❌ OpenAI API key not found. Please add it to Streamlit Secrets or .env file.")
+    st.stop()
+
 
 st.set_page_config(page_title="Property RAG", layout="wide")
 
