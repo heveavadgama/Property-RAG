@@ -13,11 +13,16 @@ import openai
 from dotenv import load_dotenv
 from openai import OpenAI
 
-# NLP imports for feature normalization
+
 import nltk
+try:
+    nltk.data.find('corpora/wordnet')
+except LookupError:
+    nltk.download('wordnet')
+    nltk.download('omw-1.4')
+
 from nltk.stem import WordNetLemmatizer
-nltk.download('wordnet')
-nltk.download('omw-1.4')
+
 
 # -------------------------
 # Page Config and Secrets
