@@ -159,40 +159,57 @@ def synthesize_answer_with_context(query: str, retrieved_records: pd.DataFrame, 
     rows = []
     for i, r in retrieved_records.head(10).iterrows():
         rows.append({
-            "address": str(r.get("address","")),
-            "price": int(r.get("price",0)) if pd.notna(r.get("price")) else "",
+            "address": str(r.get("address", "")),
+            "price": int(r.get("price", 0)) if pd.notna(r.get("price")) else "",
             "bedrooms": int(r.get("bedrooms")) if pd.notna(r.get("bedrooms")) else "",
-            "bathrooms": r.get("bathrooms",""),
-            "description": (r.get("description","")[:200] + ("..." if len(str(r.get("description",""))) > 200 else ""))
+            "bathrooms": r.get("bathrooms", ""),
+            "description": (r.get("description", "")[:200] + ("..." if len(str(r.get("description", ""))) > 200 else ""))
         })
-    context_text = "Properties (top results):\n" + "\n".join([f"- {row['address']} | ${row['price']} | {row['bedrooms']}bd/{row['bathrooms']}ba | {row['description']}" for row in rows])
 
-    if use_openai and OPENAI_KEY:
-        prompt = f"You are a helpful assistant answering this user question about properties. Use the context below to answer concisely and cite the properties by address.\n\nContext:\n{context_text}\n\nQuestion: {query}\n\nAnswer (short):"
+    context_text = "Properties (top results):\n" + "\n".join([
+        f"- {row['address']} | ${row['price']} | {row['bedrooms']}bd/{row['bathrooms']}ba | {row['description']}"
+        for row in rows
+    ])
+
+    # ✅ fixed line here
+    if use_openai and openai.api_key:
+        prompt = (
+            f"You are a helpful assistant answering this user question about properties. "
+            f"Use the context below to answer concisely and cite the properties by address.\n\n"
+            f"Context:\n{context_text}\n\nQuestion: {query}\n\nAnswer (short):"
+        )
         try:
             resp = openai.ChatCompletion.create(
-                model="gpt-4o-mini", # change if you prefer older models; user can set key
-                messages=[{"role":"user","content":prompt}],
+                model="gpt-4o-mini",  # you can change model name if needed
+                messages=[{"role": "user", "content": prompt}],
                 max_tokens=300,
                 temperature=0.0
             )
             answer = resp["choices"][0]["message"]["content"].strip()
-            return answer + "\n\nSources:\n" + "\n".join([f"- {r['address']} (${r['price']})" for _, r in retrieved_records.head(5).iterrows()])
+            return (
+                answer
+                + "\n\nSources:\n"
+                + "\n".join([f"- {r['address']} (${r['price']})" for _, r in retrieved_records.head(5).iterrows()])
+            )
         except Exception as e:
             st.warning(f"OpenAI call failed: {e}")
-            # fallback to template
+
     # fallback: deterministic synthesis
     top = retrieved_records.head(5)
     avg_price = top["price"].mean() if "price" in top.columns else None
-    answer_lines = [f"I found {len(retrieved_records)} matching records. Top {min(5,len(top))} results (address - price - beds/baths):"]
+    answer_lines = [
+        f"I found {len(retrieved_records)} matching records. Top {min(5, len(top))} results (address - price - beds/baths):"
+    ]
     for _, r in top.iterrows():
-        address = r.get("address","<no address>")
-        price = r.get("price","n/a")
-        beds = r.get("bedrooms","n/a")
-        baths = r.get("bathrooms","n/a")
+        address = r.get("address", "<no address>")
+        price = r.get("price", "n/a")
+        beds = r.get("bedrooms", "n/a")
+        baths = r.get("bathrooms", "n/a")
         answer_lines.append(f"- {address} — ${price:,} — {beds} bd / {baths} ba")
+
     if avg_price:
         answer_lines.append(f"\nAverage price among top results: ${avg_price:,.2f}")
+
     answer_lines.append("\nSources: the dataset entries shown above (addresses listed).")
     return "\n".join(answer_lines)
 
