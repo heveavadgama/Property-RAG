@@ -125,31 +125,23 @@ def parse_query_filters(query: str):
     return beds, baths, keywords
 
 # AI / Summary
-def synthesize_answer_with_context(query: str, retrieved_records: pd.DataFrame, use_openai: bool = False, top_n: int = 3, keywords: List[str] = []):
+def synthesize_answer_with_context(query: str, retrieved_records: pd.DataFrame, use_openai: bool = False, top_n: int = 5):
     if len(retrieved_records) == 0:
         return "I couldn't find any properties matching your criteria."
 
-    # Check if keywords exist in any description
-    keyword_flags = {}
-    for kw in keywords:
-        keyword_flags[kw] = retrieved_records['description'].str.lower().str.contains(kw).any()
+    # Neutral introduction (no negative statements)
+    intro_text = f"Based on your query, here are some properties that match your criteria:"
 
-    summary_lines = []
+    # Show top N properties in concise summary
     top_properties = retrieved_records.head(top_n)
+    summary_lines = []
     for _, r in top_properties.iterrows():
         price_str = f"${r.get('price', 0):,}" if pd.notna(r.get('price')) else "N/A"
         beds = r.get('bedrooms', 'N/A')
         baths = r.get('bathrooms', 'N/A')
         summary_lines.append(f"- {r.get('address','N/A')} — {beds} bd / {baths} ba — {price_str}")
 
-    if keywords:
-        # Instead of "none specifically mention …", we just acknowledge keyword presence neutrally
-        intro_text = f"Based on your query, here are some properties that match your criteria:"
-    else:
-        intro_text = f"I found {len(retrieved_records)} properties matching your query. Top {top_n} results:"
-
-
-    text_summary = intro_text + "\n" + "\n".join(summary_lines)
+    return intro_text + "\n" + "\n".join(summary_lines)
 
     # Optional OpenAI generative answer
     if use_openai and openai.api_key:
