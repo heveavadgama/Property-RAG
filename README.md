@@ -7,7 +7,6 @@ Perfect! Here’s a **more polished, visually appealing GitHub README** for **Es
 
 [![Streamlit App](https://img.shields.io/badge/Live-App-blue?style=for-the-badge\&logo=streamlit)](https://estategenie.streamlit.app/#estate-genie)
 [![Python](https://img.shields.io/badge/Python-3.13-blue?style=for-the-badge\&logo=python)](https://www.python.org/)
-[![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
 
 **Estate Genie** is an AI-powered real estate assistant that lets users explore property listings using natural language queries. Get both a concise AI summary and a detailed table of relevant properties instantly!
 
@@ -103,11 +102,6 @@ streamlit run streamlit_app.py
 
 ---
 
-## 📜 License
-
-MIT License © 2025 Hevea Vadgama
-
----
 
 ## 🔗 Live Demo
 
