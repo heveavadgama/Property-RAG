@@ -102,16 +102,17 @@ def synthesize_answer_with_context(query: str, retrieved_records: pd.DataFrame, 
     if len(retrieved_records) == 0:
         return "I couldn't find any properties matching your criteria."
 
-    # Create a simplified context string for the LLM
+    # ***FIX: Use a larger context (top 10) for a more complete answer***
     context_rows = []
-    for _, r in retrieved_records.head(5).iterrows():
-        context_rows.append(f"- Address: {r.get('address', 'N/A')}, Price: ${r.get('price', 0):,}, Beds: {r.get('bedrooms', 'N/A')}, Baths: {r.get('bathrooms', 'N/A')}, Description: {str(r.get('description', ''))[:100]}...")
+    for _, r in retrieved_records.head(10).iterrows():
+        context_rows.append(f"- Address: {r.get('address', 'N/A')}, Price: ${r.get('price', 0):,}, Beds: {r.get('bedrooms', 'N/A')}, Baths: {r.get('bathrooms', 'N/A')}")
     context_text = "\n".join(context_rows)
 
     if use_openai:
+        # ***FIX: Improved prompt to encourage a complete list***
         prompt = (
-            f"You are Estate Genie, a helpful real estate assistant. Answer the user's question based *only* on the context provided below. Be concise and friendly. "
-            f"If the context is not sufficient, say that you couldn't find the information. Cite properties by their address.\n\n"
+            f"You are Estate Genie, a helpful real estate assistant. Answer the user's question based *only* on the context provided below. "
+            f"If multiple properties in the context match the user's request, list all of them. Be concise and friendly.\n\n"
             f"**Context:**\n{context_text}\n\n"
             f"**User Question:** {query}\n\n"
             f"**Answer:**"
@@ -120,7 +121,7 @@ def synthesize_answer_with_context(query: str, retrieved_records: pd.DataFrame, 
             resp = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=250,
+                max_tokens=300,
                 temperature=0.1
             )
             answer = resp.choices[0].message.content.strip()
@@ -150,7 +151,6 @@ with st.sidebar:
         df = pd.read_csv(uploaded_file)
         st.success("File uploaded successfully!")
     else:
-        # Use a default path if no file is uploaded
         default_path = "properties_cleaned.csv"
         if os.path.exists(default_path):
             df = pd.read_csv(default_path)
@@ -169,7 +169,6 @@ with st.sidebar:
 
     st.markdown("---")
     st.header("🔍 Filters")
-    # Load metadata to dynamically set filter ranges
     _, meta = load_index_and_meta()
     min_p, max_p = 0, 5000000
     if meta:
@@ -184,20 +183,19 @@ with st.sidebar:
 
 
 # --- Main Page for Query and Results ---
-query = st.text_input("Ask a question...", placeholder="e.g., Show me modern 3-bedroom houses in Guildford")
-use_openai = st.checkbox("Use AI-powered answers (requires OpenAI key)", value=True)
+query = st.text_input("Ask a question...", placeholder="e.g., Show me modern 2-bedroom houses under $1000")
+use_openai = st.checkbox("Use AI-powered answers", value=True)
 
 if st.button("Ask Genie", type="primary"):
     index, meta = load_index_and_meta()
     if index is None or meta is None:
-        st.error("The property index has not been built. Please upload a file and click 'Build Property Index' in the sidebar.")
+        st.error("The property index has not been built. Please click 'Build Property Index' in the sidebar.")
     elif not query:
         st.warning("Please ask a question.")
     else:
         with st.spinner("🧞‍♂️ The Genie is thinking..."):
             df_meta = pd.DataFrame(meta)
             
-            # First, check for specific analytic queries
             analytic_ans, analytic_df = handle_analytic_query(df_meta, query)
             if analytic_ans:
                 st.subheader("💡 Quick Answer")
@@ -205,29 +203,30 @@ if st.button("Ask Genie", type="primary"):
                 if not analytic_df.empty:
                     st.dataframe(analytic_df.head(10)[["address", "price", "bedrooms", "bathrooms", "description"]])
             else:
-                # If not analytic, perform a full RAG query
                 model = get_embed_model()
                 q_emb = embed_texts(model, [query])
-                distances, indices = index.search(q_emb, 50) # Retrieve 50 candidates
+                distances, indices = index.search(q_emb, 50)
                 
                 retrieved_items = [meta[i] for i in indices[0] if i < len(meta)]
                 retrieved_df = pd.DataFrame(retrieved_items)
                 retrieved_df["similarity"] = distances[0][:len(retrieved_df)]
 
-                # Apply sidebar filters to the retrieved results
+                # Apply sidebar filters
                 final_df = retrieved_df[
                     (retrieved_df["price"] >= price_range[0]) & 
                     (retrieved_df["price"] <= price_range[1])
-                ]
+                ].copy() # Use .copy() to avoid SettingWithCopyWarning
                 if bedrooms_filter != "Any":
                     final_df = final_df[final_df["bedrooms"] == int(bedrooms_filter)]
                 if bathrooms_filter != "Any":
                     final_df = final_df[final_df["bathrooms"].fillna(0) >= int(bathrooms_filter)]
+                
+                # ***FIX: Sort the final results by similarity score in descending order***
+                final_df = final_df.sort_values(by="similarity", ascending=False)
 
                 if final_df.empty:
                     st.warning("No properties found that match your search and filter criteria. Try broadening your search!")
                 else:
-                    # Display the final results
                     st.subheader("💬 Genie's Answer")
                     answer = synthesize_answer_with_context(query, final_df, use_openai)
                     st.markdown(answer)
