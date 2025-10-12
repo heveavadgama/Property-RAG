@@ -66,7 +66,8 @@ The system understands context, synonyms, and user intent to deliver precisely m
 ---
 
 ## 4. 🏗 Architecture & Data Flow
-<img width="1691" height="2859" alt="deepseek_mermaid_20251012_44d5a3" src="https://github.com/user-attachments/assets/fd3678e1-40b0-4a53-9fcc-23d8222e0108" />
+<img width="697" height="813" alt="image" src="https://github.com/user-attachments/assets/1b994964-6dfc-410d-86b9-e203938f6a45" />
+
 
 
 1. **Ingestion:** CSV data is loaded and preprocessed.
