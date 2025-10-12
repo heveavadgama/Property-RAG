@@ -171,13 +171,15 @@ def synthesize_answer_with_context(query: str, retrieved_records: pd.DataFrame, 
 
     return text_summary
 
-
 # -------------------------
 # Streamlit UI
 # -------------------------
 st.title("🧞‍♂️ Estate Genie")
-st.markdown("Your personal real estate assistant. Ask me anything about the property listings!")
+st.markdown(
+    "Your personal AI real estate assistant. Ask me about properties and get quick summaries and detailed tables!"
+)
 
+# --- Layout: Sidebar for controls ---
 with st.sidebar:
     st.header("⚙️ Controls")
     uploaded_file = st.file_uploader("Upload Property CSV", type=["csv"])
@@ -185,7 +187,7 @@ with st.sidebar:
     df = None
     if uploaded_file:
         df = pd.read_csv(uploaded_file)
-        st.success("File uploaded successfully!")
+        st.success("✅ File uploaded successfully!")
     else:
         default_path = "properties_cleaned.csv"
         if os.path.exists(default_path):
@@ -194,41 +196,45 @@ with st.sidebar:
 
     if df is not None:
         if st.button("Build Property Index"):
-            with st.spinner("Processing data and building vector index... Please wait."):
+            with st.spinner("🔨 Processing data and building vector index..."):
                 df_proc = preprocess(df)
                 model = get_embed_model()
                 embeddings = embed_texts(model, df_proc["description"].fillna("").tolist())
                 index = build_faiss_index(embeddings, embeddings.shape[1])
                 meta_list = df_proc.to_dict(orient="records")
                 save_index_and_meta(index, meta_list)
-                st.success(f"Index built and saved with {len(meta_list)} properties.")
+                st.success(f"✅ Index built with {len(meta_list)} properties!")
 
     st.markdown("---")
-    st.header("🔍 Filters")
-    _, meta = load_index_and_meta()
-    min_p, max_p = 0, 5000000
-    if meta:
-        df_meta_filter = pd.DataFrame(meta)
-        if 'price' in df_meta_filter.columns and df_meta_filter['price'].notna().any():
-            min_p = int(df_meta_filter['price'].min())
-            max_p = int(df_meta_filter['price'].max())  
+    with st.expander("🛠️ Optional Filters", expanded=False):
+        _, meta = load_index_and_meta()
+        min_p, max_p = 0, 5000000
+        if meta:
+            df_meta_filter = pd.DataFrame(meta)
+            if 'price' in df_meta_filter.columns and df_meta_filter['price'].notna().any():
+                min_p = int(df_meta_filter['price'].min())
+                max_p = int(df_meta_filter['price'].max())
 
-    price_range = st.slider("Price Range", min_p, max_p, (min_p, max_p))
-    bedrooms_filter = st.selectbox("Bedrooms (Sidebar filter)", ["Any"] + sorted(list(range(1, 9))))
-    bathrooms_filter = st.selectbox("Minimum Bathrooms (Sidebar filter)", ["Any"] + sorted(list(range(1, 7))))
-    terrace_filter = st.selectbox("Terrace preference", ["Any", "With terrace", "Without terrace"])
-    num_results = st.number_input("Number of results to display", min_value=5, max_value=50, value=10, step=5)
+        price_range = st.slider("Price Range", min_p, max_p, (min_p, max_p))
+        bedrooms_filter = st.selectbox("Bedrooms", ["Any"] + sorted(list(range(1, 9))))
+        bathrooms_filter = st.selectbox("Minimum Bathrooms", ["Any"] + sorted(list(range(1, 7))))
+        terrace_filter = st.selectbox("Terrace Preference", ["Any", "With terrace", "Without terrace"])
+        num_results = st.number_input("Number of results to display", min_value=5, max_value=50, value=10, step=5)
 
-# --- Main Query ---
-query = st.text_input("Ask a question...", placeholder="e.g., 2 baths 3 bedroom with terrace")
-use_openai = st.checkbox("Use AI-powered answers", value=True)
+# --- Main Query Section ---
+st.markdown("### 🔍 Ask about properties")
+query_col, toggle_col = st.columns([3,1])
+with query_col:
+    query = st.text_input("Type your query...", placeholder="e.g., 2 baths 3 bedroom with terrace")
+with toggle_col:
+    use_openai = st.checkbox("💬 AI Answer", value=True)
 
 if st.button("Ask Genie", type="primary"):
     index, meta = load_index_and_meta()
     if index is None or meta is None:
-        st.error("The property index has not been built. Please click 'Build Property Index' in the sidebar.")
+        st.error("⚠️ Property index not found. Build it in the sidebar first.")
     elif not query:
-        st.warning("Please ask a question.")
+        st.warning("❗ Please enter a query.")
     else:
         with st.spinner("🧞‍♂️ The Genie is thinking..."):
             df_meta = pd.DataFrame(meta)
@@ -240,10 +246,11 @@ if st.button("Ask Genie", type="primary"):
             analytic_ans, analytic_df = handle_analytic_query(df_meta, query)
             if analytic_ans:
                 st.subheader("💡 Quick Answer")
-                st.markdown(analytic_ans)
+                st.success(analytic_ans)
                 if not analytic_df.empty:
-                    df_display = analytic_df.head(num_results)[["address", "price", "bedrooms", "bathrooms", "description"]].fillna("N/A")
-                    st.dataframe(df_display)
+                    st.dataframe(
+                        analytic_df.head(num_results)[["address","price","bedrooms","bathrooms","description"]].fillna("N/A")
+                    )
             else:
                 model = get_embed_model()
                 q_emb = embed_texts(model, [query])
@@ -253,9 +260,7 @@ if st.button("Ask Genie", type="primary"):
                 retrieved_df = pd.DataFrame(retrieved_items)
                 retrieved_df["similarity"] = distances[0][:len(retrieved_df)]
 
-                # ----------------------------
-                # APPLY FILTERS: query priority first
-                # ----------------------------
+                # Query-prioritized filtering
                 filtered_df = retrieved_df.copy()
                 if q_beds:
                     filtered_df = filtered_df[filtered_df["bedrooms"] == q_beds]
@@ -266,7 +271,7 @@ if st.button("Ask Genie", type="primary"):
                         lambda desc: all(k in desc for k in q_keywords)
                     )]
 
-                # Sidebar filters applied additionally if user selected
+                # Apply sidebar filters if set
                 if bedrooms_filter != "Any":
                     filtered_df = filtered_df[filtered_df["bedrooms"] == int(bedrooms_filter)]
                 if bathrooms_filter != "Any":
@@ -277,7 +282,7 @@ if st.button("Ask Genie", type="primary"):
                     else:
                         filtered_df = filtered_df[~filtered_df["description"].str.lower().str.contains("terraced")]
 
-                # Sort by price if query mentions
+                # Sort by price or relevance
                 price_keywords = ['cheap', 'cheapest', 'under', 'less than', 'lowest price', 'by price']
                 sort_by_price = any(keyword in query.lower() for keyword in price_keywords)
                 if sort_by_price:
@@ -286,16 +291,17 @@ if st.button("Ask Genie", type="primary"):
                     filtered_df = filtered_df.sort_values(by="similarity", ascending=False)
 
                 if filtered_df.empty:
-                    st.warning("No properties found that match your search and filter criteria.")
+                    st.warning("⚠️ No properties found matching your search and filter criteria.")
                 else:
                     st.subheader("💬 Genie's Summary")
                     answer = synthesize_answer_with_context(query, filtered_df, use_openai, top_n=num_results)
-                    st.markdown(answer)
+                    st.info(answer)
 
                     st.subheader("🏡 Relevant Properties Found")
                     if sort_by_price:
                         st.info("ℹ️ Results sorted by price (lowest to highest).")
                     else:
                         st.info("ℹ️ Results sorted by relevance to your query.")
+                    
                     display_cols = ["address","price","bedrooms","bathrooms","similarity","description"]
-                    st.dataframe(filtered_df.head(num_results)[display_cols].fillna("N/A"))
+                    st.dataframe(filtered_df.head(num_results)[display_cols].fillna("N/A"), use_container_width=True)
