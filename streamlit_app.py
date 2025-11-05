@@ -374,7 +374,7 @@ def generate_openai_summary(prompt):
 # Streamlit UI
 # ----------------------------
 st.set_page_config(page_title="Estate Genie 2.0", layout="wide")
-st.title("🏡 Estate Genie — Improved RAG Search")
+st.title("🏡 Estate Genie -RAG Property Search")
 
 # SIDEBAR: dataset, index controls, and filters
 with st.sidebar:
