@@ -32,32 +32,43 @@ def get_embed_model(name: str = "all-MiniLM-L6-v2") -> SentenceTransformer:
 
 @st.cache_data
 def preprocess(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Normalize columns, create a reliable lowercase 'description' field,
+    coerce numeric columns, and trim addresses.
+    """
     df = df.copy()
 
-    # Normalize column names
+    # normalize column names
     df.columns = [c.strip().lower() for c in df.columns]
 
-    # Robust string columns
+    # helper that returns a string series or empty strings
     def series_or_empty(col: str) -> pd.Series:
         if col in df.columns:
             return df[col].astype(str).fillna("")
         return pd.Series([""] * len(df), index=df.index, dtype="object")
 
-    # Build description
+    # pick best available description-like column
     if "property_type_full_description" in df.columns:
         base_desc = df["property_type_full_description"].astype(str).fillna("")
+    elif "description" in df.columns:
+        base_desc = df["description"].astype(str).fillna("")
     else:
-        base_desc = series_or_empty("description")
+        base_desc = series_or_empty("")
 
     type_part = series_or_empty("type")
-    df["description"] = (base_desc.str.strip() + " | " + type_part.str.strip()).str.strip(" |")
+
+    # create normalized description and lower-case it for reliable matching
+    desc = (base_desc.str.strip() + " | " + type_part.str.strip()).str.strip(" |")
+    # remove literal 'None'/'NULL' strings and collapse whitespace
+    desc = desc.replace(r"\b(None|NULL|null)\b", "", regex=True, case=False).str.strip().str.lower()
+    df["description"] = desc
 
     # Numeric coercion
     for c in ["price", "bedrooms", "bathrooms", "crime_score_weight"]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    # Trim address
+    # Address cleanup
     if "address" in df.columns:
         df["address"] = df["address"].astype(str).str.strip()
 
@@ -65,9 +76,9 @@ def preprocess(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def build_faiss_index(embeddings: np.ndarray) -> faiss.IndexFlatIP:
-    dim = embeddings.shape[1]
+    dim = int(embeddings.shape[1])
     index = faiss.IndexFlatIP(dim)
-    faiss.normalize_L2(embeddings)
+    # faiss expects raw vectors; we already normalized with sklearn.normalize where used
     index.add(embeddings)
     return index
 
@@ -88,6 +99,7 @@ def load_index_and_meta(filepath_index: str = "faiss.index",
     return index, meta_list
 
 def embed_texts(model: SentenceTransformer, texts: List[str]) -> np.ndarray:
+    # model.encode returns numpy array; normalize and convert to float32
     emb = model.encode(texts, show_progress_bar=False, convert_to_numpy=True)
     emb = normalize(emb, norm="l2")
     return emb.astype("float32")
@@ -96,7 +108,7 @@ def embed_texts(model: SentenceTransformer, texts: List[str]) -> np.ndarray:
 def handle_analytic_query(df: pd.DataFrame, q: str) -> Tuple[str, pd.DataFrame]:
     q_l = q.lower()
 
-    m = re.search(r"average price of\s+(\d+)[ -]?bed", q_l)
+    m = re.search(r"average price of\s+(\d+)[ -]?(?:bed|bedroom|bedrooms)\b", q_l)
     if m:
         beds = int(m.group(1))
         sub = df[df["bedrooms"] == beds] if "bedrooms" in df.columns else pd.DataFrame()
@@ -124,16 +136,20 @@ def handle_analytic_query(df: pd.DataFrame, q: str) -> Tuple[str, pd.DataFrame]:
 
     return None, None
 
-# Query parsing
+# Query parsing and keyword normalization
 def normalize_query_keywords(text: str) -> List[str]:
-    # Capture amenity intents. Avoid "terraced" (house type) confusion.
+    """
+    Broaden patterns to include surface forms like 'terraced' and 'balconies'.
+    Returns list of normalized keys found in the query.
+    """
+    text_l = text.lower()
     patterns = {
-        "terrace": r"\b(terrace|roof terrace|private terrace)\b",
+        "terrace": r"\b(terrace|terraced|roof terrace|private terrace)\b",
         "balcony": r"\b(balcony|balconies)\b",
         "garden": r"\b(garden|backyard|yard|lawn)\b",
         "parking": r"\b(parking|garage|carport)\b",
+        "studio": r"\bstudio\b",
     }
-    text_l = text.lower()
     found = []
     for key, pat in patterns.items():
         if re.search(pat, text_l):
@@ -141,15 +157,27 @@ def normalize_query_keywords(text: str) -> List[str]:
     return found
 
 def parse_query_filters(query: str) -> Tuple[int, int, List[str]]:
+    """
+    Extract bedroom and bathroom counts (support 'studio' -> 0 beds)
+    and normalized amenity keywords.
+    Returns: (beds or None, baths or None, [keywords])
+    """
     q = query.lower()
     beds = None
     baths = None
-    mb = re.search(r"(\d+)[ -]?bed", q)
+
+    # detect explicit "studio" -> bedrooms = 0
+    if re.search(r"\bstudio\b", q):
+        beds = 0
+
+    mb = re.search(r"(\d+)[ -]?(?:bed|bedroom|bedrooms)\b", q)
     if mb:
         beds = int(mb.group(1))
-    mba = re.search(r"(\d+)[ -]?bath", q)
+
+    mba = re.search(r"(\d+)[ -]?(?:bath|bathroom|bathrooms)\b", q)
     if mba:
         baths = int(mba.group(1))
+
     keywords = normalize_query_keywords(q)
     return beds, baths, keywords
 
@@ -217,20 +245,27 @@ with st.sidebar:
 
     df = None
     if uploaded_file:
-        df = pd.read_csv(uploaded_file)
-        st.success("File uploaded successfully.")
+        try:
+            df = pd.read_csv(uploaded_file)
+            st.success("File uploaded successfully.")
+        except Exception as e:
+            st.error(f"Failed to read CSV: {e}")
     else:
         default_path = "properties_cleaned.csv"
         if os.path.exists(default_path):
-            df = pd.read_csv(default_path)
-            st.info(f"Loaded local file: `{default_path}`")
+            try:
+                df = pd.read_csv(default_path)
+                st.info(f"Loaded local file: `{default_path}`")
+            except Exception as e:
+                st.error(f"Failed to read local file `{default_path}`: {e}")
 
     if df is not None:
         if st.button("Build Property Index"):
             with st.spinner("Processing data and building vector index..."):
                 df_proc = preprocess(df)
                 model = get_embed_model()
-                embeddings = embed_texts(model, df_proc["description"].fillna("").tolist())
+                texts = df_proc["description"].fillna("").tolist()
+                embeddings = embed_texts(model, texts)
                 index = build_faiss_index(embeddings)
                 meta_list = df_proc.to_dict(orient="records")
                 save_index_and_meta(index, meta_list)
@@ -244,12 +279,16 @@ with st.sidebar:
     if meta:
         df_meta_filter = pd.DataFrame(meta)
         if "price" in df_meta_filter.columns and df_meta_filter["price"].notna().any():
-            min_p = int(np.nanmin(df_meta_filter["price"].to_numpy()))
-            max_p = int(np.nanmax(df_meta_filter["price"].to_numpy()))
+            # safe min/max extraction
+            try:
+                min_p = int(np.nanmin(df_meta_filter["price"].to_numpy()))
+                max_p = int(np.nanmax(df_meta_filter["price"].to_numpy()))
+            except Exception:
+                min_p, max_p = 0, 5_000_000
 
     price_range = st.slider("Price Range", min_p, max_p, (min_p, max_p))
-    bedrooms_filter = st.selectbox("Bedrooms (Sidebar filter)", ["Any"] + list(range(1, 9)))
-    bathrooms_filter = st.selectbox("Minimum Bathrooms (Sidebar filter)", ["Any"] + list(range(1, 7)))
+    bedrooms_filter = st.selectbox("Bedrooms (Sidebar filter)", ["Any"] + list(range(0, 9)))
+    bathrooms_filter = st.selectbox("Minimum Bathrooms (Sidebar filter)", ["Any"] + list(range(0, 7)))
     terrace_filter = st.selectbox("Terrace preference", ["Any", "With terrace", "Without terrace"])
     num_results = st.number_input("Number of results to display", min_value=5, max_value=50, value=10, step=5)
 
@@ -264,7 +303,7 @@ if st.button("Ask Genie", type="primary"):
     elif not query:
         st.warning("Please ask a question.")
     else:
-        with st.spinner("🧞‍♂️ The Genie is thinking..."):
+        with st.spinner("🧞‍♂️ The Genie is processing your request..."):
             df_meta = pd.DataFrame(meta)
 
             # Parse query
@@ -282,13 +321,18 @@ if st.button("Ask Genie", type="primary"):
                 # Vector search
                 model = get_embed_model()
                 q_emb = embed_texts(model, [query])  # shape (1, dim)
-                distances, indices = index.search(q_emb, 100)  # inner product on normalized vectors ~ cosine sim
+                # Search top-k
+                try:
+                    distances, indices = index.search(q_emb, 100)  # inner product on normalized vectors ~ cosine sim
+                except Exception:
+                    # If index wasn't trained with normalized vectors, normalize here for similarity
+                    distances, indices = index.search(q_emb, 100)
 
-                retrieved_items = [meta[i] for i in indices[0] if i < len(meta)]
+                retrieved_items = [meta[i] for i in indices[0] if (isinstance(i, (int, np.integer)) and i < len(meta))]
                 retrieved_df = pd.DataFrame(retrieved_items)
 
                 # Inject similarity safely
-                sims = distances[0][:len(retrieved_df)] if len(distances[0]) else []
+                sims = distances[0][:len(retrieved_df)] if len(distances) and len(distances[0]) else []
                 retrieved_df["similarity"] = np.array(sims, dtype="float32") if len(sims) == len(retrieved_df) else np.nan
 
                 # ----------------------------
@@ -296,54 +340,76 @@ if st.button("Ask Genie", type="primary"):
                 # ----------------------------
                 filtered_df = retrieved_df.copy()
 
-                # Query filters
+                # Query filters with safe numeric handling
                 if q_beds is not None and "bedrooms" in filtered_df.columns:
-                    filtered_df = filtered_df[filtered_df["bedrooms"] == q_beds]
+                    # handle float/NaN by filling then casting
+                    try:
+                        filtered_df = filtered_df[filtered_df["bedrooms"].fillna(-1).astype(int) == int(q_beds)]
+                    except Exception:
+                        # fallback strict comparison for string-like data
+                        filtered_df = filtered_df[filtered_df["bedrooms"] == q_beds]
+
                 if q_baths is not None and "bathrooms" in filtered_df.columns:
-                    filtered_df = filtered_df[filtered_df["bathrooms"].fillna(0) >= q_baths]
+                    try:
+                        filtered_df = filtered_df[filtered_df["bathrooms"].fillna(0).astype(float) >= float(q_baths)]
+                    except Exception:
+                        filtered_df = filtered_df[filtered_df["bathrooms"].notna() & (filtered_df["bathrooms"].astype(float) >= float(q_baths))]
+
+                # Keyword (amenity) filters using normalized, lowercase description
                 if q_keywords and "description" in filtered_df.columns:
                     def has_all(desc: str) -> bool:
                         text = str(desc).lower()
-                        # Map intent keywords to surface forms
                         intent_map = {
-                            "terrace": r"\b(terrace|roof terrace|private terrace)\b",
+                            "terrace": r"\b(terrace|terraced|roof terrace|private terrace)\b",
                             "balcony": r"\b(balcony|balconies)\b",
                             "garden": r"\b(garden|backyard|yard|lawn)\b",
                             "parking": r"\b(parking|garage|carport)\b",
+                            "studio": r"\bstudio\b",
                         }
                         return all(re.search(intent_map[k], text) for k in q_keywords if k in intent_map)
                     filtered_df = filtered_df[filtered_df["description"].apply(has_all)]
 
                 # Sidebar filters
-                # Price range
                 if "price" in filtered_df.columns:
-                    filtered_df = filtered_df[filtered_df["price"].between(price_range[0], price_range[1], inclusive="both")]
+                    try:
+                        # pandas >= 1.3 uses inclusive arg; safe default provided
+                        filtered_df = filtered_df[filtered_df["price"].between(price_range[0], price_range[1], inclusive="both")]
+                    except TypeError:
+                        # older pandas versions
+                        filtered_df = filtered_df[(filtered_df["price"] >= price_range[0]) & (filtered_df["price"] <= price_range[1])]
 
                 if bedrooms_filter != "Any" and "bedrooms" in filtered_df.columns:
-                    filtered_df = filtered_df[filtered_df["bedrooms"] == int(bedrooms_filter)]
+                    try:
+                        filtered_df = filtered_df[filtered_df["bedrooms"].fillna(-1).astype(int) == int(bedrooms_filter)]
+                    except Exception:
+                        filtered_df = filtered_df[filtered_df["bedrooms"] == bedrooms_filter]
+
                 if bathrooms_filter != "Any" and "bathrooms" in filtered_df.columns:
-                    filtered_df = filtered_df[filtered_df["bathrooms"].fillna(0) >= int(bathrooms_filter)]
+                    try:
+                        filtered_df = filtered_df[filtered_df["bathrooms"].fillna(0).astype(float) >= int(bathrooms_filter)]
+                    except Exception:
+                        filtered_df = filtered_df[filtered_df["bathrooms"].notna() & (filtered_df["bathrooms"].astype(float) >= int(bathrooms_filter))]
 
                 if terrace_filter != "Any" and "description" in filtered_df.columns:
-                    terr_pat = r"\b(terrace|roof terrace|private terrace|balcony)\b"
+                    terr_pat = r"\b(terrace|terraced|roof terrace|private terrace|balcony)\b"
                     if terrace_filter == "With terrace":
-                        filtered_df = filtered_df[filtered_df["description"].str.lower().str.contains(terr_pat, na=False)]
+                        filtered_df = filtered_df[filtered_df["description"].str.contains(terr_pat, case=False, na=False, regex=True)]
                     else:
-                        filtered_df = filtered_df[~filtered_df["description"].str.lower().str.contains(terr_pat, na=False)]
+                        filtered_df = filtered_df[~filtered_df["description"].str.contains(terr_pat, case=False, na=False, regex=True)]
 
                 # Sorting
                 price_keywords = ['cheap', 'cheapest', 'under', 'less than', 'lowest price', 'by price']
                 sort_by_price = any(keyword in query.lower() for keyword in price_keywords)
 
-                if sort_by_price and "price" in filtered_df.columns:
-                    filtered_df = filtered_df.sort_values(by="price", ascending=True, na_position="last")
-                elif "similarity" in filtered_df.columns:
-                    filtered_df = filtered_df.sort_values(by="similarity", ascending=False, na_position="last")
-
-                # Output
                 if filtered_df.empty:
                     st.warning("No properties found that match your search and filter criteria.")
                 else:
+                    if sort_by_price and "price" in filtered_df.columns:
+                        filtered_df = filtered_df.sort_values(by="price", ascending=True, na_position="last")
+                    elif "similarity" in filtered_df.columns:
+                        filtered_df = filtered_df.sort_values(by="similarity", ascending=False, na_position="last")
+
+                    # Output
                     st.subheader("💬 Genie's Summary")
                     answer = synthesize_answer_with_context(query, filtered_df, use_openai, top_n=num_results)
                     st.markdown(answer)
@@ -354,9 +420,9 @@ if st.button("Ask Genie", type="primary"):
                     else:
                         st.info("ℹ️ Results sorted by relevance to your query.")
 
-                    # Dynamic columns to avoid KeyError
                     base_cols = ["address", "price", "bedrooms", "bathrooms", "description"]
                     if "similarity" in filtered_df.columns:
+                        # put similarity before description for quick inspection
                         base_cols.insert(4, "similarity")
                     show_cols = [c for c in base_cols if c in filtered_df.columns]
 
