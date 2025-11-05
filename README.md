@@ -1,6 +1,6 @@
 # 🧞‍♂️ Estate Genie
 
-[![Streamlit App](https://img.shields.io/badge/Live-App-blue?style=for-the-badge\&logo=streamlit)](https://estategenie.streamlit.app/#estate-genie)
+[![Streamlit App](https://img.shields.io/badge/Live-App-blue?style=for-the-badge\&logo=streamlit)]([https://estategenie.streamlit.app/#estate-genie](https://property-rag-8tlo8fuc6klhdtvkmdn6yv.streamlit.app/))
 [![Python](https://img.shields.io/badge/Python-3.13-blue?style=for-the-badge\&logo=python)](https://www.python.org/)
 
 
